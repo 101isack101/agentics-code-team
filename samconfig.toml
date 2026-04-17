@@ -1,0 +1,25 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "agentics-code-team-dev"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = true
+resolve_s3 = true
+region = "us-east-1"
+s3_prefix = "agentics-code-team"
+parameter_overrides = "Stage=\"dev\""
+
+[default.package.parameters]
+resolve_s3 = true
+
+[default.sync.parameters]
+watch = true

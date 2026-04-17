@@ -1,0 +1,14 @@
+# Runtime (deben coincidir con Lambda Layer + Lambdas en producción)
+boto3>=1.34.0
+botocore>=1.34.0
+pydantic>=2.6.0
+anthropic>=0.40.0
+aws-lambda-powertools>=2.30.0
+
+# Testing
+pytest>=8.0.0
+pytest-cov>=4.1.0
+moto[s3,dynamodb,secretsmanager]>=5.0.0
+
+# Linting (opcional)
+ruff>=0.3.0

@@ -1,0 +1,16 @@
+{
+  "Comment": "PLACEHOLDER - Agentics Code Team orchestrator. Completado en Etapa 3.",
+  "StartAt": "SpecAgent",
+  "States": {
+    "SpecAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SpecAgentFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$.spec_result",
+      "End": true
+    }
+  }
+}
