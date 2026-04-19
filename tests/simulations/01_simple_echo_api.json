@@ -1,0 +1,7 @@
+{
+  "run_id": "sim-01-echo",
+  "project_name": "Echo API",
+  "requirements": "Build a minimal REST API with a single GET /echo endpoint that returns the query-string value of ?msg= back to the caller as JSON. No auth, no persistence, no external dependencies.",
+  "language": "python",
+  "complexity": "simple"
+}

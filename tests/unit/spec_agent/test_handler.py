@@ -136,6 +136,69 @@ def test_claude_returns_fenced_json_is_still_parsed(s3_bucket, runs_table, lambd
     assert result["status"] == "SPEC_READY"
 
 
+def test_project_name_with_invalid_chars_rejected(s3_bucket, runs_table, lambda_context):
+    fake_claude = _make_fake_claude(VALID_SPEC_JSON)
+    event = {
+        "run_id": "run-abc",
+        "project_name": "Demo;DROP TABLE",
+        "requirements": "Build a tiny echo API with one POST endpoint.",
+        "language": "python",
+        "complexity": "simple",
+    }
+    result = spec_agent_app.lambda_handler(
+        event,
+        context=lambda_context,
+        claude=fake_claude,
+        runs_repo=RunsRepository(),
+        artifacts_repo=ArtifactsRepository(),
+    )
+    assert result["status"] == "SPEC_FAILED"
+    assert "invalid_event" in result["error"]
+    fake_claude.complete.assert_not_called()
+
+
+def test_run_id_path_traversal_rejected(s3_bucket, runs_table, lambda_context):
+    fake_claude = _make_fake_claude(VALID_SPEC_JSON)
+    event = {
+        "run_id": "../../etc/passwd",
+        "project_name": "DemoApp",
+        "requirements": "Build a tiny echo API with one POST endpoint.",
+        "language": "python",
+        "complexity": "simple",
+    }
+    result = spec_agent_app.lambda_handler(
+        event,
+        context=lambda_context,
+        claude=fake_claude,
+        runs_repo=RunsRepository(),
+        artifacts_repo=ArtifactsRepository(),
+    )
+    assert result["status"] == "SPEC_FAILED"
+    assert "invalid_event" in result["error"]
+    fake_claude.complete.assert_not_called()
+
+
+def test_unsupported_language_rejected(s3_bucket, runs_table, lambda_context):
+    fake_claude = _make_fake_claude(VALID_SPEC_JSON)
+    event = {
+        "run_id": "run-abc",
+        "project_name": "DemoApp",
+        "requirements": "Build a tiny echo API with one POST endpoint.",
+        "language": "cobol",
+        "complexity": "simple",
+    }
+    result = spec_agent_app.lambda_handler(
+        event,
+        context=lambda_context,
+        claude=fake_claude,
+        runs_repo=RunsRepository(),
+        artifacts_repo=ArtifactsRepository(),
+    )
+    assert result["status"] == "SPEC_FAILED"
+    assert "invalid_event" in result["error"]
+    fake_claude.complete.assert_not_called()
+
+
 def test_malformed_spec_returns_failed(s3_bucket, runs_table, lambda_context):
     fake_claude = MagicMock()
     fake_claude.complete.return_value = '{"this": "is not a valid spec"}'

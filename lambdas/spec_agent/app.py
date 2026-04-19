@@ -26,10 +26,12 @@ from typing import Any
 from aws_lambda_powertools import Logger, Tracer
 from pydantic import ValidationError
 
+from claude_client import ClaudeClient
 from dynamo_repo import RunsRepository
+from json_extractor import extract_json
+from metrics import instrument_agent
 from s3_repo import ArtifactsRepository
 
-from claude_client import ClaudeClient
 from schemas import (
     SpecAgentEvent,
     SpecAgentResult,
@@ -40,23 +42,6 @@ from spec_kit_prompts import SYSTEM_PROMPT, build_messages
 
 logger = Logger()
 tracer = Tracer()
-
-
-def _extract_json(text: str) -> dict[str, Any]:
-    """Extract a JSON object from Claude's response.
-
-    Claude usually returns raw JSON, but sometimes wraps it in a ```json fence
-    despite being told not to. We trim the common wrappers defensively.
-    """
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
-        if stripped.endswith("```"):
-            stripped = stripped[: -3]
-        stripped = stripped.strip()
-        if stripped.startswith("json"):
-            stripped = stripped[4:].strip()
-    return json.loads(stripped)
 
 
 def _build_spec(
@@ -71,7 +56,7 @@ def _build_spec(
         complexity=event.complexity,
     )
     raw = claude.complete(system=SYSTEM_PROMPT, messages=messages)
-    data = _extract_json(raw)
+    data = extract_json(raw)
     data.setdefault("run_id", event.run_id)
     data.setdefault("project_name", event.project_name)
     data.setdefault("language", event.language)
@@ -81,12 +66,30 @@ def _build_spec(
 
 @logger.inject_lambda_context(log_event=True)
 @tracer.capture_lambda_handler
+@instrument_agent("spec_agent")
 def lambda_handler(
     event: dict[str, Any],
     context: Any,
     claude: ClaudeClient | None = None,
     runs_repo: RunsRepository | None = None,
     artifacts_repo: ArtifactsRepository | None = None,
+) -> dict[str, Any]:
+    try:
+        return _run(event, claude, runs_repo, artifacts_repo)
+    except Exception as exc:
+        logger.exception("spec_agent_unhandled_error")
+        return SpecAgentResult(
+            run_id=event.get("run_id", "unknown") if isinstance(event, dict) else "unknown",
+            status="SPEC_FAILED",
+            error=f"unhandled_error: {type(exc).__name__}",
+        ).model_dump()
+
+
+def _run(
+    event: dict[str, Any],
+    claude: ClaudeClient | None,
+    runs_repo: RunsRepository | None,
+    artifacts_repo: ArtifactsRepository | None,
 ) -> dict[str, Any]:
     try:
         parsed_event = SpecAgentEvent.model_validate(event)

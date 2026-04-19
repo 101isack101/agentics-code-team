@@ -1,5 +1,8 @@
 version = 0.1
 
+# -----------------------------------------------------------------------------
+# `default` mirrors `dev` so `sam deploy` with no --config-env keeps working.
+# -----------------------------------------------------------------------------
 [default.global.parameters]
 stack_name = "agentics-code-team-dev"
 
@@ -12,14 +15,70 @@ lint = true
 
 [default.deploy.parameters]
 capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
-confirm_changeset = true
+confirm_changeset = false
 resolve_s3 = true
 region = "us-east-1"
-s3_prefix = "agentics-code-team"
-parameter_overrides = "Stage=\"dev\""
+s3_prefix = "agentics-code-team-dev"
+parameter_overrides = "Stage=\"dev\" LogRetentionDays=30 MaxIterations=3 PipelineTimeoutSeconds=3600 ClaudeModel=\"claude-sonnet-4-6\""
+tags = "Project=\"agentics-code-team\" Environment=\"dev\""
 
 [default.package.parameters]
 resolve_s3 = true
 
 [default.sync.parameters]
 watch = true
+
+# -----------------------------------------------------------------------------
+# dev — fast-iteration environment. No changeset confirmation, smaller retention.
+# Usage: sam deploy --config-env dev
+# -----------------------------------------------------------------------------
+[dev.global.parameters]
+stack_name = "agentics-code-team-dev"
+
+[dev.build.parameters]
+cached = true
+parallel = true
+
+[dev.validate.parameters]
+lint = true
+
+[dev.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = false
+resolve_s3 = true
+region = "us-east-1"
+s3_prefix = "agentics-code-team-dev"
+parameter_overrides = "Stage=\"dev\" LogRetentionDays=30 MaxIterations=3 PipelineTimeoutSeconds=3600 ClaudeModel=\"claude-sonnet-4-6\""
+tags = "Project=\"agentics-code-team\" Environment=\"dev\""
+
+[dev.package.parameters]
+resolve_s3 = true
+
+[dev.sync.parameters]
+watch = true
+
+# -----------------------------------------------------------------------------
+# prod — always confirms changesets, longer retention, higher timeouts.
+# Usage: sam deploy --config-env prod
+# -----------------------------------------------------------------------------
+[prod.global.parameters]
+stack_name = "agentics-code-team-prod"
+
+[prod.build.parameters]
+cached = true
+parallel = true
+
+[prod.validate.parameters]
+lint = true
+
+[prod.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = true
+resolve_s3 = true
+region = "us-east-1"
+s3_prefix = "agentics-code-team-prod"
+parameter_overrides = "Stage=\"prod\" LogRetentionDays=90 MaxIterations=3 PipelineTimeoutSeconds=7200"
+tags = "Project=\"agentics-code-team\" Environment=\"prod\""
+
+[prod.package.parameters]
+resolve_s3 = true

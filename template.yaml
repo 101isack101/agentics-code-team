@@ -3,6 +3,8 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   Agentics Code Team - Multi-Agent Code System.
   Etapa 1: Spec Agent + S3 artifacts bucket + DynamoDB runs table with optimistic locking.
+  Etapa 2: CodeGen Agent + Review / Security / Scalability parallel validators.
+  Etapa 3: Iterator Agent (deterministic ping-pong guard) + Step Functions orchestrator.
 
 Parameters:
   Stage:
@@ -13,7 +15,7 @@ Parameters:
 
   ClaudeModel:
     Type: String
-    Default: claude-opus-4-7
+    Default: claude-sonnet-4-6
     Description: Anthropic model ID used by all agents.
 
   LogRetentionDays:
@@ -22,9 +24,23 @@ Parameters:
     AllowedValues: [1, 7, 14, 30, 60, 90, 180, 365]
     Description: CloudWatch log retention for Lambda functions.
 
+  MaxIterations:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    MaxValue: 10
+    Description: Hard cap on corrective iterations per pipeline run.
+
+  PipelineTimeoutSeconds:
+    Type: Number
+    Default: 3600
+    MinValue: 300
+    MaxValue: 43200
+    Description: Wall-clock timeout for the whole State Machine execution.
+
 Globals:
   Function:
-    Runtime: python3.12
+    Runtime: python3.11
     Architectures: [x86_64]
     Timeout: 300
     MemorySize: 1024
@@ -151,19 +167,23 @@ Resources:
           Value: !Ref Stage
 
   # =========================================================================
-  # Lambda Layer - shared repos (DynamoDB + S3) and utilities
+  # Lambda Layer - shared runtime deps (anthropic, pydantic, powertools, boto3)
+  # plus shared modules (DynamoDB repo with optimistic locking, S3 repo,
+  # Claude client, JSON extractor, validator runner + schemas).
+  # Centralizing heavy deps here avoids duplicating ~15MB per Lambda across
+  # the 5 agent functions.
   # =========================================================================
-  SharedLayer:
+  AgenticsSharedLayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: !Sub "agentics-shared-${Stage}"
-      Description: Shared DynamoDB (optimistic locking) and S3 repos plus utilities.
+      Description: Shared deps (anthropic, pydantic, powertools) + repos and utilities.
       ContentUri: shared/layer/
-      CompatibleRuntimes: [python3.12]
+      CompatibleRuntimes: [python3.11]
       CompatibleArchitectures: [x86_64]
       RetentionPolicy: Delete
     Metadata:
-      BuildMethod: python3.12
+      BuildMethod: python3.11
 
   # =========================================================================
   # Spec Agent Lambda - turns raw user requirements into TechnicalSpec JSON.
@@ -178,7 +198,7 @@ Resources:
       Timeout: 600
       MemorySize: 1024
       Layers:
-        - !Ref SharedLayer
+        - !Ref AgenticsSharedLayer
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref ArtifactsBucket
@@ -194,6 +214,314 @@ Resources:
     Properties:
       LogGroupName: !Sub "/aws/lambda/${SpecAgentFunction}"
       RetentionInDays: !Ref LogRetentionDays
+
+  # =========================================================================
+  # CodeGen Agent Lambda - consumes TechnicalSpec, emits generated source
+  # files under artifacts/<run_id>/v<n>/ plus a manifest.json with pointers.
+  # =========================================================================
+  CodeGenAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "agentics-codegen-agent-${Stage}"
+      Description: Generates source code from a TechnicalSpec and uploads files to S3.
+      CodeUri: lambdas/codegen_agent/
+      Handler: codegen.lambda_handler
+      Timeout: 900
+      MemorySize: 2048
+      Layers:
+        - !Ref AgenticsSharedLayer
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref ArtifactsBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RunsTable
+        - Statement:
+            - Effect: Allow
+              Action: [secretsmanager:GetSecretValue]
+              Resource: !Ref AnthropicApiKeySecret
+
+  CodeGenAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${CodeGenAgentFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # =========================================================================
+  # Review Agent Lambda - code quality / maintainability / spec alignment.
+  # Runs in parallel with Security and Scalability agents from Step Functions.
+  # =========================================================================
+  ReviewAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "agentics-review-agent-${Stage}"
+      Description: Reviews generated code for quality and spec alignment.
+      CodeUri: lambdas/review_agent/
+      Handler: review.lambda_handler
+      Timeout: 600
+      MemorySize: 1024
+      Layers:
+        - !Ref AgenticsSharedLayer
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref ArtifactsBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RunsTable
+        - Statement:
+            - Effect: Allow
+              Action: [secretsmanager:GetSecretValue]
+              Resource: !Ref AnthropicApiKeySecret
+
+  ReviewAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ReviewAgentFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # =========================================================================
+  # Security Agent Lambda - OWASP Top 10 / injection / secrets / authz.
+  # =========================================================================
+  SecurityAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "agentics-security-agent-${Stage}"
+      Description: Scans generated code for security issues (OWASP Top 10, injection, authz).
+      CodeUri: lambdas/security_agent/
+      Handler: security.lambda_handler
+      Timeout: 600
+      MemorySize: 1024
+      Layers:
+        - !Ref AgenticsSharedLayer
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref ArtifactsBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RunsTable
+        - Statement:
+            - Effect: Allow
+              Action: [secretsmanager:GetSecretValue]
+              Resource: !Ref AnthropicApiKeySecret
+
+  SecurityAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SecurityAgentFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # =========================================================================
+  # Scalability Agent Lambda - latency / memory / cost / cold starts / N+1.
+  # =========================================================================
+  ScalabilityAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "agentics-scalability-agent-${Stage}"
+      Description: Assesses generated code for scalability, perf and cost risks.
+      CodeUri: lambdas/scalability_agent/
+      Handler: scalability.lambda_handler
+      Timeout: 600
+      MemorySize: 1024
+      Layers:
+        - !Ref AgenticsSharedLayer
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref ArtifactsBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RunsTable
+        - Statement:
+            - Effect: Allow
+              Action: [secretsmanager:GetSecretValue]
+              Resource: !Ref AnthropicApiKeySecret
+
+  ScalabilityAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ScalabilityAgentFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # =========================================================================
+  # Iterator Agent Lambda - deterministic ping-pong guard + fix dispatcher.
+  # Reads the 3 validator reports, fingerprints persistent issues, and decides
+  # whether to loop (ITERATOR_READY), converge (ITERATOR_DONE), or abort
+  # (ITERATOR_EXHAUSTED / ITERATOR_UNRESOLVABLE). Pure logic — no LLM call.
+  # =========================================================================
+  IteratorAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "agentics-iterator-agent-${Stage}"
+      Description: Aggregates validator reports and decides loop / converge / abort.
+      CodeUri: lambdas/iterator_agent/
+      Handler: iterator.lambda_handler
+      Timeout: 60
+      MemorySize: 512
+      Layers:
+        - !Ref AgenticsSharedLayer
+      Environment:
+        Variables:
+          MAX_ITERATIONS: !Ref MaxIterations
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref ArtifactsBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RunsTable
+
+  IteratorAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${IteratorAgentFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # =========================================================================
+  # Step Functions - main pipeline orchestrator.
+  # Flow: SpecAgent -> CodeGen -> (Review || Security || Scalability) -> Iterator
+  #       Loop back to CodeGen while Iterator says ITERATOR_READY.
+  #       Hard cap at MAX_ITERATIONS=3 (enforced in iterator_schemas).
+  # =========================================================================
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/agentics-main-${Stage}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  MainStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "agentics-main-${Stage}"
+      DefinitionUri: statemachine/main.asl.json
+      DefinitionSubstitutions:
+        SpecAgentFunctionArn: !GetAtt SpecAgentFunction.Arn
+        CodeGenAgentFunctionArn: !GetAtt CodeGenAgentFunction.Arn
+        ReviewAgentFunctionArn: !GetAtt ReviewAgentFunction.Arn
+        SecurityAgentFunctionArn: !GetAtt SecurityAgentFunction.Arn
+        ScalabilityAgentFunctionArn: !GetAtt ScalabilityAgentFunction.Arn
+        IteratorAgentFunctionArn: !GetAtt IteratorAgentFunction.Arn
+        PipelineTimeoutSeconds: !Ref PipelineTimeoutSeconds
+      Tracing:
+        Enabled: true
+      Logging:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SpecAgentFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CodeGenAgentFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ReviewAgentFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SecurityAgentFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ScalabilityAgentFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref IteratorAgentFunction
+        - CloudWatchLogsFullAccess
+        - Statement:
+            - Effect: Allow
+              Action:
+                - xray:PutTraceSegments
+                - xray:PutTelemetryRecords
+                - xray:GetSamplingRules
+                - xray:GetSamplingTargets
+              Resource: "*"
+      Tags:
+        Project: agentics-code-team
+        Stage: !Ref Stage
+
+  # =========================================================================
+  # Operational alerts — SNS topic + CloudWatch alarms.
+  # Subscriptions (email, Slack webhook, PagerDuty) are intentionally NOT
+  # provisioned here. Post-deploy, attach them via:
+  #   aws sns subscribe --topic-arn <arn> --protocol email --notification-endpoint <addr>
+  # =========================================================================
+  AgenticsAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "agentics-alerts-${Stage}"
+      DisplayName: !Sub "Agentics Code Team Alerts (${Stage})"
+      Tags:
+        - Key: Project
+          Value: agentics-code-team
+        - Key: Stage
+          Value: !Ref Stage
+
+  AlarmPipelineFailures:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "agentics-pipeline-failures-${Stage}"
+      AlarmDescription: Step Functions execution failures in the last 5 minutes.
+      Namespace: AWS/States
+      MetricName: ExecutionsFailed
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref MainStateMachine
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AgenticsAlertsTopic
+
+  AlarmPipelineExhausted:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "agentics-pipeline-exhausted-${Stage}"
+      AlarmDescription: Pipeline reached MAX_ITERATIONS without converging.
+      Namespace: AgenticsCodeTeam
+      MetricName: IteratorIterations
+      Dimensions:
+        - Name: stage
+          Value: !Ref Stage
+        - Name: outcome
+          Value: exhausted
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AgenticsAlertsTopic
+
+  AlarmSpecAgentErrors:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "agentics-spec-agent-errors-${Stage}"
+      AlarmDescription: Spec Agent Lambda is erroring.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SpecAgentFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AgenticsAlertsTopic
+
+  AlarmCodeGenErrors:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "agentics-codegen-errors-${Stage}"
+      AlarmDescription: CodeGen Agent Lambda is erroring.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CodeGenAgentFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AgenticsAlertsTopic
 
 Outputs:
   ArtifactsBucketName:
@@ -214,8 +542,56 @@ Outputs:
     Export:
       Name: !Sub "${AWS::StackName}-SpecAgentArn"
 
+  CodeGenAgentFunctionArn:
+    Description: CodeGen Agent Lambda ARN.
+    Value: !GetAtt CodeGenAgentFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-CodeGenAgentArn"
+
+  ReviewAgentFunctionArn:
+    Description: Review Agent Lambda ARN.
+    Value: !GetAtt ReviewAgentFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ReviewAgentArn"
+
+  SecurityAgentFunctionArn:
+    Description: Security Agent Lambda ARN.
+    Value: !GetAtt SecurityAgentFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-SecurityAgentArn"
+
+  ScalabilityAgentFunctionArn:
+    Description: Scalability Agent Lambda ARN.
+    Value: !GetAtt ScalabilityAgentFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ScalabilityAgentArn"
+
+  IteratorAgentFunctionArn:
+    Description: Iterator Agent Lambda ARN.
+    Value: !GetAtt IteratorAgentFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-IteratorAgentArn"
+
+  MainStateMachineArn:
+    Description: Main Step Functions state machine ARN.
+    Value: !Ref MainStateMachine
+    Export:
+      Name: !Sub "${AWS::StackName}-MainStateMachineArn"
+
+  AgenticsSharedLayerArn:
+    Description: ARN of the shared Lambda Layer consumed by all agents.
+    Value: !Ref AgenticsSharedLayer
+    Export:
+      Name: !Sub "${AWS::StackName}-SharedLayerArn"
+
   AnthropicSecretArn:
     Description: Secret holding the Anthropic API key (JSON).
     Value: !Ref AnthropicApiKeySecret
     Export:
       Name: !Sub "${AWS::StackName}-AnthropicSecretArn"
+
+  AgenticsAlertsTopicArn:
+    Description: SNS topic for pipeline alarms. Attach subscriptions post-deploy.
+    Value: !Ref AgenticsAlertsTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-AgenticsAlertsTopicArn"

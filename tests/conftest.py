@@ -23,9 +23,20 @@ from moto import mock_aws
 
 ROOT = Path(__file__).resolve().parent.parent
 SHARED_LAYER = ROOT / "shared" / "layer" / "python"
-SPEC_AGENT = ROOT / "lambdas" / "spec_agent"
+AGENT_DIRS = [
+    ROOT / "lambdas" / "spec_agent",
+    ROOT / "lambdas" / "codegen_agent",
+    ROOT / "lambdas" / "review_agent",
+    ROOT / "lambdas" / "security_agent",
+    ROOT / "lambdas" / "scalability_agent",
+    ROOT / "lambdas" / "iterator_agent",
+]
 
-for path in (SHARED_LAYER, SPEC_AGENT):
+# Insert layer first (lowest-priority lookups go to layer), then agent dirs.
+# Agent dirs have uniquely-named modules (codegen.py, review.py, etc.) except
+# spec_agent which keeps generic names (app.py, schemas.py) — those are not
+# shadowed because no other agent defines them.
+for path in (SHARED_LAYER, *AGENT_DIRS):
     sys.path.insert(0, str(path))
 
 

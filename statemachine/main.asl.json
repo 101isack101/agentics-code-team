@@ -1,5 +1,6 @@
 {
-  "Comment": "PLACEHOLDER - Agentics Code Team orchestrator. Completado en Etapa 3.",
+  "Comment": "Agentics Code Team orchestrator. Etapa 3: Spec -> CodeGen -> (Review || Security || Scalability) -> Iterator. Loop until convergence or MAX_ITERATIONS=3. Etapa 4 adds root-level TimeoutSeconds.",
+  "TimeoutSeconds": ${PipelineTimeoutSeconds},
   "StartAt": "SpecAgent",
   "States": {
     "SpecAgent": {
@@ -9,8 +10,311 @@
         "FunctionName": "${SpecAgentFunctionArn}",
         "Payload.$": "$"
       },
+      "ResultSelector": {
+        "run_id.$": "$.Payload.run_id",
+        "status.$": "$.Payload.status",
+        "spec_s3_uri.$": "$.Payload.spec_s3_uri",
+        "spec_version.$": "$.Payload.spec_version",
+        "error.$": "$.Payload.error"
+      },
       "ResultPath": "$.spec_result",
-      "End": true
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "CheckSpecStatus"
+    },
+
+    "CheckSpecStatus": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.spec_result.status",
+          "StringEquals": "SPEC_READY",
+          "Next": "InitializeIteration"
+        }
+      ],
+      "Default": "PipelineFailed"
+    },
+
+    "InitializeIteration": {
+      "Type": "Pass",
+      "Parameters": {
+        "run_id.$": "$.run_id",
+        "spec_s3_uri.$": "$.spec_result.spec_s3_uri",
+        "iteration": 1,
+        "prior_manifest_s3_uri": null,
+        "issues_to_fix": []
+      },
+      "ResultPath": "$.codegen_input",
+      "Next": "CodeGen"
+    },
+
+    "CodeGen": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CodeGenAgentFunctionArn}",
+        "Payload.$": "$.codegen_input"
+      },
+      "ResultSelector": {
+        "run_id.$": "$.Payload.run_id",
+        "status.$": "$.Payload.status",
+        "gen_version.$": "$.Payload.gen_version",
+        "gen_manifest_s3_uri.$": "$.Payload.gen_manifest_s3_uri",
+        "files_count.$": "$.Payload.files_count",
+        "error.$": "$.Payload.error"
+      },
+      "ResultPath": "$.codegen_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "CheckCodeGenStatus"
+    },
+
+    "CheckCodeGenStatus": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.codegen_result.status",
+          "StringEquals": "GEN_READY",
+          "Next": "ParallelValidators"
+        }
+      ],
+      "Default": "PipelineFailed"
+    },
+
+    "ParallelValidators": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "ReviewAgent",
+          "States": {
+            "ReviewAgent": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${ReviewAgentFunctionArn}",
+                "Payload": {
+                  "run_id.$": "$.run_id",
+                  "spec_s3_uri.$": "$.spec_result.spec_s3_uri",
+                  "gen_manifest_s3_uri.$": "$.codegen_result.gen_manifest_s3_uri",
+                  "gen_version.$": "$.codegen_result.gen_version",
+                  "iteration.$": "$.codegen_result.gen_version"
+                }
+              },
+              "ResultSelector": {
+                "run_id.$": "$.Payload.run_id",
+                "status.$": "$.Payload.status",
+                "gen_version.$": "$.Payload.gen_version",
+                "score.$": "$.Payload.score",
+                "passed.$": "$.Payload.passed",
+                "report_s3_uri.$": "$.Payload.report_s3_uri",
+                "error.$": "$.Payload.error"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "SecurityAgent",
+          "States": {
+            "SecurityAgent": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${SecurityAgentFunctionArn}",
+                "Payload": {
+                  "run_id.$": "$.run_id",
+                  "spec_s3_uri.$": "$.spec_result.spec_s3_uri",
+                  "gen_manifest_s3_uri.$": "$.codegen_result.gen_manifest_s3_uri",
+                  "gen_version.$": "$.codegen_result.gen_version",
+                  "iteration.$": "$.codegen_result.gen_version"
+                }
+              },
+              "ResultSelector": {
+                "run_id.$": "$.Payload.run_id",
+                "status.$": "$.Payload.status",
+                "gen_version.$": "$.Payload.gen_version",
+                "score.$": "$.Payload.score",
+                "passed.$": "$.Payload.passed",
+                "report_s3_uri.$": "$.Payload.report_s3_uri",
+                "error.$": "$.Payload.error"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "ScalabilityAgent",
+          "States": {
+            "ScalabilityAgent": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${ScalabilityAgentFunctionArn}",
+                "Payload": {
+                  "run_id.$": "$.run_id",
+                  "spec_s3_uri.$": "$.spec_result.spec_s3_uri",
+                  "gen_manifest_s3_uri.$": "$.codegen_result.gen_manifest_s3_uri",
+                  "gen_version.$": "$.codegen_result.gen_version",
+                  "iteration.$": "$.codegen_result.gen_version"
+                }
+              },
+              "ResultSelector": {
+                "run_id.$": "$.Payload.run_id",
+                "status.$": "$.Payload.status",
+                "gen_version.$": "$.Payload.gen_version",
+                "score.$": "$.Payload.score",
+                "passed.$": "$.Payload.passed",
+                "report_s3_uri.$": "$.Payload.report_s3_uri",
+                "error.$": "$.Payload.error"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultSelector": {
+        "review.$": "$[0]",
+        "security.$": "$[1]",
+        "scalability.$": "$[2]"
+      },
+      "ResultPath": "$.validators",
+      "Next": "IteratorAgent"
+    },
+
+    "IteratorAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${IteratorAgentFunctionArn}",
+        "Payload": {
+          "run_id.$": "$.run_id",
+          "spec_s3_uri.$": "$.spec_result.spec_s3_uri",
+          "gen_manifest_s3_uri.$": "$.codegen_result.gen_manifest_s3_uri",
+          "gen_version.$": "$.codegen_result.gen_version",
+          "review_result.$": "$.validators.review",
+          "security_result.$": "$.validators.security",
+          "scalability_result.$": "$.validators.scalability"
+        }
+      },
+      "ResultSelector": {
+        "run_id.$": "$.Payload.run_id",
+        "status.$": "$.Payload.status",
+        "iteration.$": "$.Payload.iteration",
+        "all_passed.$": "$.Payload.all_passed",
+        "next_iteration.$": "$.Payload.next_iteration",
+        "prior_manifest_s3_uri.$": "$.Payload.prior_manifest_s3_uri",
+        "issues_to_fix.$": "$.Payload.issues_to_fix",
+        "persistent_fingerprints.$": "$.Payload.persistent_fingerprints",
+        "error.$": "$.Payload.error"
+      },
+      "ResultPath": "$.iterator_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "RouteIteratorDecision"
+    },
+
+    "RouteIteratorDecision": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.iterator_result.status",
+          "StringEquals": "ITERATOR_DONE",
+          "Next": "PipelineSucceeded"
+        },
+        {
+          "Variable": "$.iterator_result.status",
+          "StringEquals": "ITERATOR_READY",
+          "Next": "PrepareNextIteration"
+        },
+        {
+          "Variable": "$.iterator_result.status",
+          "StringEquals": "ITERATOR_EXHAUSTED",
+          "Next": "PipelineExhausted"
+        },
+        {
+          "Variable": "$.iterator_result.status",
+          "StringEquals": "ITERATOR_UNRESOLVABLE",
+          "Next": "PipelineUnresolvable"
+        }
+      ],
+      "Default": "PipelineFailed"
+    },
+
+    "PrepareNextIteration": {
+      "Type": "Pass",
+      "Parameters": {
+        "run_id.$": "$.run_id",
+        "spec_s3_uri.$": "$.spec_result.spec_s3_uri",
+        "iteration.$": "$.iterator_result.next_iteration",
+        "prior_manifest_s3_uri.$": "$.iterator_result.prior_manifest_s3_uri",
+        "issues_to_fix.$": "$.iterator_result.issues_to_fix"
+      },
+      "ResultPath": "$.codegen_input",
+      "Next": "CodeGen"
+    },
+
+    "PipelineSucceeded": {
+      "Type": "Succeed"
+    },
+
+    "PipelineExhausted": {
+      "Type": "Fail",
+      "Error": "IteratorExhausted",
+      "Cause": "MAX_ITERATIONS reached without convergence. Artifacts of the last iteration remain in S3 for inspection."
+    },
+
+    "PipelineUnresolvable": {
+      "Type": "Fail",
+      "Error": "IteratorUnresolvable",
+      "Cause": "One or more issues persisted across 3 iterations. See ITERATION#vN items in DynamoDB for fingerprints."
+    },
+
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "PipelineFailed",
+      "Cause": "An upstream agent emitted a FAILED status. Inspect the run's DynamoDB items for the failing stage."
     }
   }
 }

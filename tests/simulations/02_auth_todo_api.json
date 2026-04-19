@@ -1,0 +1,7 @@
+{
+  "run_id": "sim-02-todos",
+  "project_name": "Auth Todo API",
+  "requirements": "Build a To-Do REST API secured with JWT bearer tokens and persisted in DynamoDB. Endpoints: POST /auth/login, POST /todos, GET /todos, GET /todos/{id}, PATCH /todos/{id}, DELETE /todos/{id}. Every mutation must be scoped to the authenticated user. Tokens expire after 1 hour. Validate all inputs. Cover creation, listing, retrieval, update, and deletion flows.",
+  "language": "python",
+  "complexity": "simple"
+}

@@ -1,2 +1,3 @@
-anthropic>=0.40.0
-pydantic>=2.6.0
+# All runtime deps (anthropic, pydantic, boto3, aws-lambda-powertools) are
+# provided by AgenticsSharedLayer. Keep this file so SAM's build step for
+# this function doesn't skip pip entirely, but leave it otherwise empty.

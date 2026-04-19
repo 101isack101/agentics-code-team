@@ -1,0 +1,7 @@
+{
+  "run_id": "sim-03-orders",
+  "project_name": "Order Processor",
+  "requirements": "Build an idempotent order-processing microservice. POST /orders accepts a customer_id, a list of line items (sku+quantity), and an Idempotency-Key header; duplicate keys must return the original result without re-charging. GET /orders/{id} exposes status. Orders persist in DynamoDB with optimistic locking. The service must reject negative quantities, cap total per order at 1000 units, AND simultaneously guarantee sub-100ms p99 latency under 10k rps with no caching layer allowed — this contradiction is intentional and the system must surface it. Include audit log entries per state transition.",
+  "language": "python",
+  "complexity": "simple"
+}

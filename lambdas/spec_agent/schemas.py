@@ -13,6 +13,11 @@ from pydantic import BaseModel, Field
 
 ComplexityLevel = Literal["simple", "enterprise"]
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
+SupportedLanguage = Literal["python", "typescript", "go"]
+
+# Whitelist regexes — enforced before anything touches S3 keys or DynamoDB PKs.
+RUN_ID_PATTERN = r"^[a-zA-Z0-9_-]{1,64}$"
+PROJECT_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\- ]{1,63}$"
 
 
 class AcceptanceCriterion(BaseModel):
@@ -44,7 +49,7 @@ class TechnicalSpec(BaseModel):
     run_id: str
     project_name: str
     complexity: ComplexityLevel
-    language: str
+    language: SupportedLanguage
     summary: str
     user_stories: list[str] = Field(min_length=1)
     functional_requirements: list[str] = Field(min_length=1)
@@ -57,12 +62,17 @@ class TechnicalSpec(BaseModel):
 
 
 class SpecAgentEvent(BaseModel):
-    """Expected input event for the Spec Agent Lambda."""
+    """Expected input event for the Spec Agent Lambda.
 
-    run_id: str
-    project_name: str
-    requirements: str = Field(min_length=10)
-    language: str = "python"
+    All fields that end up in S3 keys or DynamoDB PKs are regex-gated to
+    guarantee safe path segments. ``requirements`` is length-bounded to keep
+    prompts under the Claude context budget.
+    """
+
+    run_id: str = Field(pattern=RUN_ID_PATTERN)
+    project_name: str = Field(pattern=PROJECT_NAME_PATTERN)
+    requirements: str = Field(min_length=20, max_length=8000)
+    language: SupportedLanguage = "python"
     complexity: ComplexityLevel = "simple"
 
 

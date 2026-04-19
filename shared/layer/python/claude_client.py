@@ -1,12 +1,12 @@
-"""Thin wrapper around the Anthropic SDK for the Spec Agent.
+"""Thin wrapper around the Anthropic SDK, shared by all agent Lambdas.
 
 Responsibilities:
 - Resolve the API key from Secrets Manager (cached across warm invocations).
-- Call Claude 4.7 Opus with system + user prompts.
+- Call Claude with system + user prompts.
 - Return the raw text content for the caller to parse as JSON.
 
-Retry/backoff is handled by the Anthropic SDK itself (max_retries=2 default).
-Step Functions provides the outer retry policy for truly failed invocations.
+Lives in the shared Lambda Layer so every agent imports the same client
+without duplicating the anthropic package or the secret-lookup logic.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import boto3
 from anthropic import Anthropic
 
 
-DEFAULT_MODEL = "claude-opus-4-7"
+DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 8000
 
 
