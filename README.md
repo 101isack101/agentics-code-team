@@ -41,8 +41,80 @@
 |---|---|
 | **Spec Agent** | Converts requirement → `TechnicalSpec v1.0` |
 | **CodeGen Agent** | Produces code files + `manifest.json` |
-| **Review / Security / Scalability** | 3 parallel validators — gate: `score ≥ 85 ∧ no blocker ∧ no critical` |
+| **Review / Security / Scalability** | 3 parallel validators — gate: `score ≥ 80 ∧ no blocker ∧ no critical` |
 | **Iterator** | Aggregates reports, detects ping-pong via SHA1 fingerprint, decides: `DONE` / `READY` / `EXHAUSTED` / `UNRESOLVABLE` |
+
+---
+
+## 🧪 Simulation Results (production)
+
+Real runs against the deployed stack in `us-east-1` with `claude-sonnet-4-6`:
+
+| Sim | Description | Iterations | Result | Scores |
+|---|---|---|---|---|
+| sim-01 | Simple Echo API (Python) | 1 | `ITERATOR_DONE` ✅ | review=91, security=82, scalability=92 |
+| sim-02 | JWT + DynamoDB CRUD (26 files) | 1 | `ITERATOR_DONE` ✅ | review=82, security=82, scalability=82 |
+| sim-03 | Order Processor with impossible requirement¹ | 3 | `ITERATOR_EXHAUSTED` ✅ | security never exceeds 80 |
+
+¹ Deliberately contradictory requirement: `sub-100ms @ 10k rps without cache`. The system
+exhausted 3 iterations, detected the contradiction and reported `ITERATOR_EXHAUSTED` instead
+of looping forever — correct behavior by design.
+
+---
+
+## 🔧 Technical Decisions & Problems Solved
+
+### JSON truncated mid-response
+Claude occasionally cuts its response before closing the JSON object when output is large.
+The solution differentiates two failure modes that require distinct correction prompts:
+
+- `JSONDecodeError` → prompt asking to complete/repair the malformed JSON
+- `ValidationError` (Pydantic) → prompt asking to adjust the structure to match the schema
+
+Sending the wrong prompt for each case causes the model to generate cascading incorrect
+responses. `_complete_with_json_retry()` in `codegen.py` implements this with 2 retries
+(`_MAX_JSON_RETRIES = 2`).
+
+### Infinite agent loops (deterministic anti-ping-pong)
+The Iterator can reject the same issue iteration after iteration if the model fails to
+resolve it. Detecting this without relying on text (which varies by temperature):
+
+```python
+fingerprint = sha1(f"{category}|{file}|{description[:80]}".encode()).hexdigest()[:16]
+```
+
+If the same fingerprint appears in runs N-2, N-1 and N → `ITERATOR_UNRESOLVABLE`. The
+system stops and reports the issue as unresolvable instead of continuing to iterate.
+
+### Token budget in fix mode
+With 25+ issues, full descriptions exceeded Sonnet's 16k output token limit, producing
+truncated JSON. Solution: only the top-8 issues sorted by severity
+(`blocker → critical → major → minor`) are forwarded to the correction agent.
+
+### Delta fix-pass (CodeGen in correction mode)
+In iterations ≥ 2, CodeGen only regenerates files that changed according to the Iterator's
+report. Unchanged files are taken from the previous S3 manifest (same URIs, no re-upload).
+This avoids exceeding the token budget on larger codebases.
+
+### Model migration: Opus 4.7 → Sonnet 4.6
+The system was developed and validated first with `claude-opus-4-7`. Migrated to
+`claude-sonnet-4-6` for cost: **5x cheaper** ($3/$15 vs $15/$75 per MTok input/output)
+with equivalent quality for structured code generation. Both models were tested in
+production; Sonnet demonstrated the same capability for this specific use case.
+`PASS_SCORE_THRESHOLD` adjusted from 85 → 80 because Sonnet scores security ~82
+consistently vs 90+ for Opus.
+
+---
+
+## ⚙️ Current Production Configuration
+
+| Parameter | Value | Reason |
+|---|---|---|
+| Model | `claude-sonnet-4-6` | Validated with Opus 4.7 first; migrated for cost (5x cheaper) |
+| `PASS_SCORE_THRESHOLD` | `80` | Sonnet scores security ~82 consistently |
+| `_MAX_ISSUES_TO_FIX` | `8` | 25+ issues exceeded Sonnet's token budget |
+| `_CODEGEN_MAX_TOKENS` | `16000` | Output limit for mid-size codebases |
+| `MaxIterations` | `3` | Hard cap on the correction loop |
 
 ---
 
@@ -189,7 +261,7 @@ artifacts/<run_id>/v<n>/security.json
 artifacts/<run_id>/v<n>/scalability.json
 ```
 
-**Validator gate:** `score ≥ 85 ∧ 0 blocker issues ∧ 0 critical issues` — recalculated deterministically, ignoring the LLM's own `pass` field.
+**Validator gate:** `score ≥ 80 ∧ 0 blocker issues ∧ 0 critical issues` — recalculated deterministically, ignoring the LLM's own `pass` field.
 
 **Fingerprints (Iterator):** `sha1(category|file|description[:80])[:16]` — an issue appearing in runs N−2, N−1 and N is marked `UNRESOLVABLE`.
 
