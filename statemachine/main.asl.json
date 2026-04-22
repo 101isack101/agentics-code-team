@@ -38,7 +38,7 @@
           "Next": "InitializeIteration"
         }
       ],
-      "Default": "PipelineFailed"
+      "Default": "NotifyFailed"
     },
 
     "InitializeIteration": {
@@ -90,7 +90,7 @@
           "Next": "ParallelValidators"
         }
       ],
-      "Default": "PipelineFailed"
+      "Default": "NotifyFailed"
     },
 
     "ParallelValidators": {
@@ -261,7 +261,7 @@
         {
           "Variable": "$.iterator_result.status",
           "StringEquals": "ITERATOR_DONE",
-          "Next": "PipelineSucceeded"
+          "Next": "NotifySuccess"
         },
         {
           "Variable": "$.iterator_result.status",
@@ -271,15 +271,15 @@
         {
           "Variable": "$.iterator_result.status",
           "StringEquals": "ITERATOR_EXHAUSTED",
-          "Next": "PipelineExhausted"
+          "Next": "NotifyExhausted"
         },
         {
           "Variable": "$.iterator_result.status",
           "StringEquals": "ITERATOR_UNRESOLVABLE",
-          "Next": "PipelineUnresolvable"
+          "Next": "NotifyUnresolvable"
         }
       ],
-      "Default": "PipelineFailed"
+      "Default": "NotifyFailed"
     },
 
     "PrepareNextIteration": {
@@ -293,6 +293,99 @@
       },
       "ResultPath": "$.codegen_input",
       "Next": "CodeGen"
+    },
+
+    "NotifySuccess": {
+      "Type": "Pass",
+      "Parameters": {
+        "run_id.$": "$.run_id",
+        "status": "DONE",
+        "iteration.$": "$.iterator_result.iteration",
+        "scores.$": "$.validators",
+        "manifest_s3_uri.$": "$.codegen_result.gen_manifest_s3_uri"
+      },
+      "ResultPath": "$.notify",
+      "Next": "PublishSuccess"
+    },
+
+    "PublishSuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertsTopicArn}",
+        "Message.$": "States.JsonToString($.notify)"
+      },
+      "ResultPath": null,
+      "Next": "PipelineSucceeded"
+    },
+
+    "NotifyExhausted": {
+      "Type": "Pass",
+      "Parameters": {
+        "run_id.$": "$.run_id",
+        "status": "EXHAUSTED",
+        "iteration.$": "$.iterator_result.iteration",
+        "scores.$": "$.validators",
+        "manifest_s3_uri.$": "$.codegen_result.gen_manifest_s3_uri"
+      },
+      "ResultPath": "$.notify",
+      "Next": "PublishExhausted"
+    },
+
+    "PublishExhausted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertsTopicArn}",
+        "Message.$": "States.JsonToString($.notify)"
+      },
+      "ResultPath": null,
+      "Next": "PipelineExhausted"
+    },
+
+    "NotifyUnresolvable": {
+      "Type": "Pass",
+      "Parameters": {
+        "run_id.$": "$.run_id",
+        "status": "UNRESOLVABLE",
+        "iteration.$": "$.iterator_result.iteration",
+        "scores.$": "$.validators",
+        "manifest_s3_uri.$": "$.codegen_result.gen_manifest_s3_uri"
+      },
+      "ResultPath": "$.notify",
+      "Next": "PublishUnresolvable"
+    },
+
+    "PublishUnresolvable": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertsTopicArn}",
+        "Message.$": "States.JsonToString($.notify)"
+      },
+      "ResultPath": null,
+      "Next": "PipelineUnresolvable"
+    },
+
+    "NotifyFailed": {
+      "Type": "Pass",
+      "Parameters": {
+        "run_id.$": "$.run_id",
+        "status": "FAILED"
+      },
+      "ResultPath": "$.notify",
+      "Next": "PublishFailed"
+    },
+
+    "PublishFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertsTopicArn}",
+        "Message.$": "States.JsonToString($.notify)"
+      },
+      "ResultPath": null,
+      "Next": "PipelineFailed"
     },
 
     "PipelineSucceeded": {

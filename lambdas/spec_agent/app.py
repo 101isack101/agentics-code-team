@@ -55,7 +55,7 @@ def _build_spec(
         language=event.language,
         complexity=event.complexity,
     )
-    raw = claude.complete(system=SYSTEM_PROMPT, messages=messages)
+    raw = claude.complete(system=SYSTEM_PROMPT, messages=messages, agent_name="spec_agent")
     data = extract_json(raw)
     data.setdefault("run_id", event.run_id)
     data.setdefault("project_name", event.project_name)

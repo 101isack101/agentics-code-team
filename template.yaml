@@ -38,6 +38,11 @@ Parameters:
     MaxValue: 43200
     Description: Wall-clock timeout for the whole State Machine execution.
 
+  DiscordDMChannelId:
+    Type: String
+    Default: "1485389933807013932"
+    Description: Discord DM channel ID where the notifier Lambda posts pipeline outcomes.
+
 Globals:
   Function:
     Runtime: python3.11
@@ -160,6 +165,25 @@ Resources:
       Name: !Sub "agentics-code-team/${Stage}/anthropic-api-key"
       Description: Anthropic API key used by all agent Lambdas.
       SecretString: '{"ANTHROPIC_API_KEY":"REPLACE_ME_BEFORE_DEPLOY"}'
+      Tags:
+        - Key: Project
+          Value: agentics-code-team
+        - Key: Stage
+          Value: !Ref Stage
+
+  # =========================================================================
+  # Discord bot token - used by the DiscordNotifier Lambda to DM the user
+  # when a pipeline run terminates. Populate post-deploy with:
+  #   aws secretsmanager put-secret-value \
+  #     --secret-id <DiscordBotTokenSecret ARN> \
+  #     --secret-string '{"DISCORD_BOT_TOKEN":"<bot token>"}'
+  # =========================================================================
+  DiscordBotTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "agentics-code-team/${Stage}/discord-bot-token"
+      Description: Discord bot token for the pipeline-terminal notifier.
+      SecretString: '{"DISCORD_BOT_TOKEN":"REPLACE_ME_BEFORE_DEPLOY"}'
       Tags:
         - Key: Project
           Value: agentics-code-team
@@ -370,6 +394,45 @@ Resources:
       RetentionInDays: !Ref LogRetentionDays
 
   # =========================================================================
+  # Discord Notifier Lambda - subscribes to AgenticsAlertsTopic and posts a
+  # Discord DM when the State Machine publishes a terminal event
+  # (DONE / EXHAUSTED / UNRESOLVABLE / FAILED).
+  # =========================================================================
+  DiscordNotifierFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "agentics-discord-notifier-${Stage}"
+      Description: Posts a Discord DM when a pipeline run reaches a terminal state.
+      CodeUri: lambdas/discord_notifier/
+      Handler: app.lambda_handler
+      Timeout: 30
+      MemorySize: 256
+      Layers:
+        - !Ref AgenticsSharedLayer
+      Environment:
+        Variables:
+          DISCORD_DM_CHANNEL_ID: !Ref DiscordDMChannelId
+          DISCORD_SECRET_ARN: !Ref DiscordBotTokenSecret
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RunsTable
+        - Statement:
+            - Effect: Allow
+              Action: [secretsmanager:GetSecretValue]
+              Resource: !Ref DiscordBotTokenSecret
+      Events:
+        PipelineTerminalEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref AgenticsAlertsTopic
+
+  DiscordNotifierLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${DiscordNotifierFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # =========================================================================
   # Step Functions - main pipeline orchestrator.
   # Flow: SpecAgent -> CodeGen -> (Review || Security || Scalability) -> Iterator
   #       Loop back to CodeGen while Iterator says ITERATOR_READY.
@@ -394,6 +457,7 @@ Resources:
         ScalabilityAgentFunctionArn: !GetAtt ScalabilityAgentFunction.Arn
         IteratorAgentFunctionArn: !GetAtt IteratorAgentFunction.Arn
         PipelineTimeoutSeconds: !Ref PipelineTimeoutSeconds
+        AlertsTopicArn: !Ref AgenticsAlertsTopic
       Tracing:
         Enabled: true
       Logging:
@@ -424,6 +488,10 @@ Resources:
                 - xray:GetSamplingRules
                 - xray:GetSamplingTargets
               Resource: "*"
+        - Statement:
+            - Effect: Allow
+              Action: [sns:Publish]
+              Resource: !Ref AgenticsAlertsTopic
       Tags:
         Project: agentics-code-team
         Stage: !Ref Stage
@@ -595,3 +663,15 @@ Outputs:
     Value: !Ref AgenticsAlertsTopic
     Export:
       Name: !Sub "${AWS::StackName}-AgenticsAlertsTopicArn"
+
+  DiscordBotTokenSecretArn:
+    Description: Secret holding the Discord bot token. Populate post-deploy with put-secret-value.
+    Value: !Ref DiscordBotTokenSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-DiscordBotTokenSecretArn"
+
+  DiscordNotifierFunctionArn:
+    Description: Discord Notifier Lambda ARN.
+    Value: !GetAtt DiscordNotifierFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-DiscordNotifierArn"

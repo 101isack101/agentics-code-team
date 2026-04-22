@@ -135,6 +135,7 @@ def run_validator(
         raw = claude.complete(
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
+            agent_name=validator_name,
         )
         data = extract_json(raw)
         data.setdefault("run_id", parsed.run_id)

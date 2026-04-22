@@ -101,7 +101,12 @@ def _complete_with_json_retry(
     run_id: str,
     schema_cls: type[_T] = CodeGenOutput,  # type: ignore[assignment]
 ) -> _T:
-    raw = claude.complete(system=SYSTEM_PROMPT, messages=messages, max_tokens=_CODEGEN_MAX_TOKENS)
+    raw = claude.complete(
+        system=SYSTEM_PROMPT,
+        messages=messages,
+        max_tokens=_CODEGEN_MAX_TOKENS,
+        agent_name="codegen_agent",
+    )
     last_exc: Exception | None = None
     for attempt in range(_MAX_JSON_RETRIES + 1):
         try:
@@ -126,6 +131,7 @@ def _complete_with_json_retry(
                     system=SYSTEM_PROMPT,
                     messages=fix_messages,
                     max_tokens=_CODEGEN_MAX_TOKENS,
+                    agent_name="codegen_agent",
                 )
     raise last_exc  # type: ignore[misc]
 

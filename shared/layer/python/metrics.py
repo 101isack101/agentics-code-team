@@ -3,12 +3,16 @@
 Thin wrapper around ``aws_lambda_powertools.metrics.single_metric`` so every
 agent emits metrics under the same namespace with consistent dimensions.
 
-Four metric names are published across the pipeline:
+Metrics published across the pipeline:
 
-    AgentInvocations      Count          dims: agent, stage
-    AgentDurationMs       Milliseconds   dims: agent, stage
-    IteratorIterations    Count          dims: stage, outcome
-    ValidatorPassRate     NoUnit         dims: validator, stage  (0.0 or 1.0)
+    AgentInvocations            Count          dims: agent, stage
+    AgentDurationMs             Milliseconds   dims: agent, stage
+    IteratorIterations          Count          dims: stage, outcome
+    ValidatorPassRate           NoUnit         dims: validator, stage  (0.0 or 1.0)
+    ClaudeInputTokens           Count          dims: agent, stage
+    ClaudeOutputTokens          Count          dims: agent, stage
+    ClaudeCacheReadTokens       Count          dims: agent, stage  (>0 = cache hit)
+    ClaudeCacheCreationTokens   Count          dims: agent, stage  (>0 = cache write)
 
 ``namespace`` defaults to the POWERTOOLS_METRICS_NAMESPACE env var (set in
 ``template.yaml`` Globals). ``STAGE`` is read from the Lambda env.
@@ -60,6 +64,26 @@ def emit_validator_outcome(validator: str, passed: bool) -> None:
         1.0 if passed else 0.0,
         {"stage": _stage(), "validator": validator},
     )
+
+
+def emit_claude_usage(agent: str, usage: Any) -> None:
+    """Emit Claude API token-usage metrics for cost and caching observability.
+
+    ``usage`` is the ``response.usage`` object from the Anthropic SDK. Its
+    ``cache_*_input_tokens`` fields are only populated when prompt caching is
+    actually used — otherwise they default to 0. A cache hit shows up as
+    ``ClaudeCacheReadTokens > 0``; a cache write shows as
+    ``ClaudeCacheCreationTokens > 0``.
+    """
+    dims = {"stage": _stage(), "agent": agent}
+    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+    cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    _emit("ClaudeInputTokens", MetricUnit.Count, input_tokens, dims)
+    _emit("ClaudeOutputTokens", MetricUnit.Count, output_tokens, dims)
+    _emit("ClaudeCacheReadTokens", MetricUnit.Count, cache_read, dims)
+    _emit("ClaudeCacheCreationTokens", MetricUnit.Count, cache_creation, dims)
 
 
 def instrument_agent(agent_name: str) -> Callable:
